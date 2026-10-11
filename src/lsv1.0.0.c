@@ -22,6 +22,7 @@
 extern int errno;
 
 /* ---- Prototypes ---- */
+int compare_strings(const void *a, const void *b);
 void do_ls(const char *dir, int long_format, int horizontal_format);
 void print_permissions(mode_t mode);
 void print_long(const char *dirname, const char *filename);
@@ -134,6 +135,12 @@ void print_horizontal(char **files, int count, int max_len)
     }
     if (pos > 0) printf("\n");
 }
+int compare_strings(const void *a, const void *b)
+{
+    const char *str_a = *(const char **)a;
+    const char *str_b = *(const char **)b;
+    return strcmp(str_a, str_b);
+}
 
 int get_terminal_width(void)
 {
@@ -220,6 +227,8 @@ void do_ls(const char *dir, int long_format, int horizontal_format)
 
     if (errno != 0)
         perror("readdir failed");
+    // Sort alphabetically
+    qsort(files, count, sizeof(char *), compare_strings);
 
     // Display: long listing OR columns
     if (long_format) {
