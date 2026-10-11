@@ -22,7 +22,7 @@
 extern int errno;
 
 /* ---- Prototypes ---- */
-void do_ls(const char *dir, int long_format);
+void do_ls(const char *dir, int long_format, int horizontal_format);
 void print_permissions(mode_t mode);
 void print_long(const char *dirname, const char *filename);
 int get_terminal_width(void);
@@ -118,6 +118,22 @@ void print_columns(char **files, int count, int max_len)
         printf("\n");
     }
 }
+void print_horizontal(char **files, int count, int max_len)
+{
+    int term_width = get_terminal_width();
+    int col_width = max_len + 2;
+
+    int pos = 0;
+    for (int i = 0; i < count; i++) {
+        if (pos + col_width > term_width) {
+            printf("\n");
+            pos = 0;
+        }
+        printf("%-*s", col_width, files[i]);
+        pos += col_width;
+    }
+    if (pos > 0) printf("\n");
+}
 
 int get_terminal_width(void)
 {
@@ -132,33 +148,36 @@ int main(int argc, char *const argv[])
 {
     int opt;
     int long_format = 0;
+    int horizontal_format = 0;
 
-    while ((opt = getopt(argc, argv, "l")) != -1) {
+    while ((opt = getopt(argc, argv, "lx")) != -1) {
         switch (opt) {
             case 'l':
                 long_format = 1;
                 break;
+            case 'x':
+                horizontal_format = 1;
+                break;
             default:
-                fprintf(stderr, "Usage: %s [-l] [dir...]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-l] [-x] [dir...]\n", argv[0]);
                 exit(1);
         }
     }
 
     if (optind == argc) {
-        do_ls(".", long_format);
+        do_ls(".", long_format, horizontal_format);
     } else {
         for (int i = optind; i < argc; i++) {
             printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], long_format);
+            do_ls(argv[i], long_format, horizontal_format);
             puts("");
         }
     }
 
     return 0;
 }
-
 /* ---- do_ls ---- */
-void do_ls(const char *dir, int long_format)
+void do_ls(const char *dir, int long_format, int horizontal_format)
 {
     struct dirent *entry;
     DIR *dp = opendir(dir);
@@ -204,12 +223,14 @@ void do_ls(const char *dir, int long_format)
 
     // Display: long listing OR columns
     if (long_format) {
-        for (int i = 0; i < count; i++) {
-            print_long(dir, files[i]);
-        }
-    } else {
-        print_columns(files, count, max_len);
+    for (int i = 0; i < count; i++) {
+        print_long(dir, files[i]);
     }
+} else if (horizontal_format) {
+    print_horizontal(files, count, max_len);
+} else {
+    print_columns(files, count, max_len);
+}
 
     // Free memory
     for (int i = 0; i < count; i++)
