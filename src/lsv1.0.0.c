@@ -7,6 +7,7 @@
  *     $ ./bin/ls -l /home
  *     $ ./bin/ls -l /home /etc
  */
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -24,6 +25,8 @@ extern int errno;
 void do_ls(const char *dir, int long_format);
 void print_permissions(mode_t mode);
 void print_long(const char *dirname, const char *filename);
+int get_terminal_width(void);
+void print_columns(char **files, int count, int max_len);
 
 /* ---- print_permissions: prints rwx string from st_mode ---- */
 void print_permissions(mode_t mode)
@@ -95,6 +98,34 @@ void print_long(const char *dirname, const char *filename)
     /* 7. Filename */
     printf(" %s\n", filename);
 }
+void print_columns(char **files, int count, int max_len)
+{
+    int term_width = get_terminal_width();
+    int col_width = max_len + 2;   // padding between columns
+    int num_cols = term_width / col_width;
+    if (num_cols < 1) num_cols = 1;
+    if (num_cols > count) num_cols = count;
+
+    int num_rows = (count + num_cols - 1) / num_cols;
+
+    for (int row = 0; row < num_rows; row++) {
+        for (int col = 0; col < num_cols; col++) {
+            int index = col * num_rows + row;
+            if (index >= count) continue;
+
+            printf("%-*s", col_width, files[index]);
+        }
+        printf("\n");
+    }
+}
+
+int get_terminal_width(void)
+{
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1)
+        return 80;   // fallback if ioctl fails
+    return w.ws_col;
+}
 
 /* ---- main ---- */
 int main(int argc, char *const argv[])
@@ -137,20 +168,53 @@ void do_ls(const char *dir, int long_format)
         return;
     }
 
+    // Dynamic array of filenames
+    char **files = NULL;
+    int count = 0;
+    int capacity = 0;
+    int max_len = 0;
+
     errno = 0;
     while ((entry = readdir(dp)) != NULL) {
         if (entry->d_name[0] == '.')
             continue;
 
-        if (long_format)
-            print_long(dir, entry->d_name);
-        else
-            printf("%s\n", entry->d_name);
+        // Grow the array if needed
+        if (count == capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            files = realloc(files, capacity * sizeof(char *));
+            if (files == NULL) {
+                perror("realloc");
+                closedir(dp);
+                return;
+            }
+        }
+
+        // Duplicate the filename
+        files[count] = strdup(entry->d_name);
+        count++;
+
+        // Track longest filename
+        int len = strlen(entry->d_name);
+        if (len > max_len) max_len = len;
     }
 
-    if (errno != 0) {
+    if (errno != 0)
         perror("readdir failed");
+
+    // Display: long listing OR columns
+    if (long_format) {
+        for (int i = 0; i < count; i++) {
+            print_long(dir, files[i]);
+        }
+    } else {
+        print_columns(files, count, max_len);
     }
+
+    // Free memory
+    for (int i = 0; i < count; i++)
+        free(files[i]);
+    free(files);
 
     closedir(dp);
 }
