@@ -1,13 +1,21 @@
 /*
  * Programming Assignment 02: lsv1.0.0
- * Base ls implementation with -l long listing support.
+ * A custom implementation of the ls utility.
+ *
+ * Features implemented:
+ *   - Default: multi-column "down then across" display
+ *   - -l      : long listing format
+ *   - -x      : horizontal "across" display
+ *   - Sorting: alphabetical
+ *   - Colors : by file type (directory, executable, archive, symlink, special)
+ *
  * Usage:
- *     $ ./bin/ls
- *     $ ./bin/ls -l
- *     $ ./bin/ls -l /home
- *     $ ./bin/ls -l /home /etc
+ *   $ ./bin/ls
+ *   $ ./bin/ls -l
+ *   $ ./bin/ls -x
+ *   $ ./bin/ls /home
+ *   $ ./bin/ls -l /etc
  */
-#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -15,26 +23,39 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
 
+/* ---- ANSI color escape codes ---- */
+#define COL_RESET   "\033[0m"
+#define COL_BLUE    "\033[0;34m"
+#define COL_GREEN   "\033[0;32m"
+#define COL_RED     "\033[0;31m"
+#define COL_PINK    "\033[1;35m"
+#define COL_REVERSE "\033[7m"
+
 extern int errno;
 
-/* ---- Prototypes ---- */
-int compare_strings(const void *a, const void *b);
+/* ---- Function prototypes ---- */
 void do_ls(const char *dir, int long_format, int horizontal_format);
 void print_permissions(mode_t mode);
 void print_long(const char *dirname, const char *filename);
-int get_terminal_width(void);
-void print_columns(char **files, int count, int max_len);
+int  get_terminal_width(void);
+void print_columns(const char *dirname, char **files, int count, int max_len);
+void print_horizontal(const char *dirname, char **files, int count, int max_len);
+int  compare_strings(const void *a, const void *b);
+void print_colored(const char *dirname, const char *filename);
 
-/* ---- print_permissions: prints rwx string from st_mode ---- */
+/* ==================================================================
+ * print_permissions: builds a 10-char string like "-rwxr-xr-x"
+ * from the numeric st_mode.
+ * ================================================================== */
 void print_permissions(mode_t mode)
 {
     char perms[11] = "----------";
 
-    /* File type */
     if (S_ISDIR(mode))       perms[0] = 'd';
     else if (S_ISLNK(mode))  perms[0] = 'l';
     else if (S_ISCHR(mode))  perms[0] = 'c';
@@ -43,17 +64,14 @@ void print_permissions(mode_t mode)
     else if (S_ISSOCK(mode)) perms[0] = 's';
     else                     perms[0] = '-';
 
-    /* Owner */
     if (mode & S_IRUSR) perms[1] = 'r';
     if (mode & S_IWUSR) perms[2] = 'w';
     if (mode & S_IXUSR) perms[3] = 'x';
 
-    /* Group */
     if (mode & S_IRGRP) perms[4] = 'r';
     if (mode & S_IWGRP) perms[5] = 'w';
     if (mode & S_IXGRP) perms[6] = 'x';
 
-    /* Others */
     if (mode & S_IROTH) perms[7] = 'r';
     if (mode & S_IWOTH) perms[8] = 'w';
     if (mode & S_IXOTH) perms[9] = 'x';
@@ -61,7 +79,9 @@ void print_permissions(mode_t mode)
     printf("%s", perms);
 }
 
-/* ---- print_long: prints one file in long format ---- */
+/* ==================================================================
+ * print_long: prints one file in long-listing format.
+ * ================================================================== */
 void print_long(const char *dirname, const char *filename)
 {
     struct stat buf;
@@ -74,35 +94,96 @@ void print_long(const char *dirname, const char *filename)
         return;
     }
 
-    /* 1. Permissions */
     print_permissions(buf.st_mode);
-
-    /* 2. Link count */
     printf(" %2ld", buf.st_nlink);
 
-    /* 3. Owner name */
     struct passwd *pw = getpwuid(buf.st_uid);
     printf(" %s", pw ? pw->pw_name : "?");
 
-    /* 4. Group name */
     struct group *gr = getgrgid(buf.st_gid);
     printf(" %s", gr ? gr->gr_name : "?");
 
-    /* 5. File size */
     printf(" %8ld", buf.st_size);
 
-    /* 6. Time (last modified) */
     char *timestr = ctime(&buf.st_mtime);
-    timestr[16] = '\0';        /* cut seconds + year */
-    printf(" %s", timestr + 4); /* skip "Wed " */
+    timestr[16] = '\0';
+    printf(" %s", timestr + 4);
 
-    /* 7. Filename */
     printf(" %s\n", filename);
 }
-void print_columns(char **files, int count, int max_len)
+
+/* ==================================================================
+ * get_terminal_width: returns the number of columns of the terminal.
+ * Falls back to 80 if ioctl fails.
+ * ================================================================== */
+int get_terminal_width(void)
+{
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1)
+        return 80;
+    return w.ws_col;
+}
+
+/* ==================================================================
+ * compare_strings: comparison function for qsort (sorts strings).
+ * ================================================================== */
+int compare_strings(const void *a, const void *b)
+{
+    const char *sa = *(const char **)a;
+    const char *sb = *(const char **)b;
+    return strcmp(sa, sb);
+}
+
+/* ==================================================================
+ * print_colored: prints a filename with a color based on its type.
+ * ================================================================== */
+void print_colored(const char *dirname, const char *filename)
+{
+    struct stat buf;
+    char fullpath[2048];
+    snprintf(fullpath, sizeof(fullpath), "%s/%s", dirname, filename);
+
+    if (lstat(fullpath, &buf) == -1) {
+        printf("%s", filename);
+        return;
+    }
+
+    if (S_ISLNK(buf.st_mode)) {
+        printf(COL_PINK "%s" COL_RESET, filename);
+        return;
+    }
+    if (S_ISDIR(buf.st_mode)) {
+        printf(COL_BLUE "%s" COL_RESET, filename);
+        return;
+    }
+    if (S_ISCHR(buf.st_mode) || S_ISBLK(buf.st_mode) ||
+        S_ISFIFO(buf.st_mode) || S_ISSOCK(buf.st_mode)) {
+        printf(COL_REVERSE "%s" COL_RESET, filename);
+        return;
+    }
+    if (buf.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) {
+        printf(COL_GREEN "%s" COL_RESET, filename);
+        return;
+    }
+
+    const char *ext = strrchr(filename, '.');
+    if (ext && (strcmp(ext, ".tar") == 0 ||
+                strcmp(ext, ".gz")  == 0 ||
+                strcmp(ext, ".zip") == 0)) {
+        printf(COL_RED "%s" COL_RESET, filename);
+        return;
+    }
+
+    printf("%s", filename);
+}
+
+/* ==================================================================
+ * print_columns: prints files in "down then across" columns.
+ * ================================================================== */
+void print_columns(const char *dirname, char **files, int count, int max_len)
 {
     int term_width = get_terminal_width();
-    int col_width = max_len + 2;   // padding between columns
+    int col_width = max_len + 2;
     int num_cols = term_width / col_width;
     if (num_cols < 1) num_cols = 1;
     if (num_cols > count) num_cols = count;
@@ -114,12 +195,19 @@ void print_columns(char **files, int count, int max_len)
             int index = col * num_rows + row;
             if (index >= count) continue;
 
-            printf("%-*s", col_width, files[index]);
+            int name_len = strlen(files[index]);
+            print_colored(dirname, files[index]);
+            for (int k = name_len; k < col_width; k++)
+                printf(" ");
         }
         printf("\n");
     }
 }
-void print_horizontal(char **files, int count, int max_len)
+
+/* ==================================================================
+ * print_horizontal: prints files in "across" columns.
+ * ================================================================== */
+void print_horizontal(const char *dirname, char **files, int count, int max_len)
 {
     int term_width = get_terminal_width();
     int col_width = max_len + 2;
@@ -130,27 +218,79 @@ void print_horizontal(char **files, int count, int max_len)
             printf("\n");
             pos = 0;
         }
-        printf("%-*s", col_width, files[i]);
+        int name_len = strlen(files[i]);
+        print_colored(dirname, files[i]);
+        for (int k = name_len; k < col_width; k++)
+            printf(" ");
         pos += col_width;
     }
     if (pos > 0) printf("\n");
 }
-int compare_strings(const void *a, const void *b)
+
+/* ==================================================================
+ * do_ls: reads a directory, sorts it, and displays it.
+ * ================================================================== */
+void do_ls(const char *dir, int long_format, int horizontal_format)
 {
-    const char *str_a = *(const char **)a;
-    const char *str_b = *(const char **)b;
-    return strcmp(str_a, str_b);
+    struct dirent *entry;
+    DIR *dp = opendir(dir);
+
+    if (dp == NULL) {
+        fprintf(stderr, "Cannot open directory : %s\n", dir);
+        return;
+    }
+
+    char **files = NULL;
+    int count = 0;
+    int capacity = 0;
+    int max_len = 0;
+
+    errno = 0;
+    while ((entry = readdir(dp)) != NULL) {
+        if (entry->d_name[0] == '.')
+            continue;
+
+        if (count == capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            files = realloc(files, capacity * sizeof(char *));
+            if (files == NULL) {
+                perror("realloc");
+                closedir(dp);
+                return;
+            }
+        }
+
+        files[count] = strdup(entry->d_name);
+        count++;
+
+        int len = strlen(entry->d_name);
+        if (len > max_len) max_len = len;
+    }
+
+    if (errno != 0)
+        perror("readdir failed");
+
+    qsort(files, count, sizeof(char *), compare_strings);
+
+    if (long_format) {
+        for (int i = 0; i < count; i++)
+            print_long(dir, files[i]);
+    } else if (horizontal_format) {
+        print_horizontal(dir, files, count, max_len);
+    } else {
+        print_columns(dir, files, count, max_len);
+    }
+
+    for (int i = 0; i < count; i++)
+        free(files[i]);
+    free(files);
+
+    closedir(dp);
 }
 
-int get_terminal_width(void)
-{
-    struct winsize w;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1)
-        return 80;   // fallback if ioctl fails
-    return w.ws_col;
-}
-
-/* ---- main ---- */
+/* ==================================================================
+ * main: parses -l and -x flags using getopt.
+ * ================================================================== */
 int main(int argc, char *const argv[])
 {
     int opt;
@@ -182,69 +322,4 @@ int main(int argc, char *const argv[])
     }
 
     return 0;
-}
-/* ---- do_ls ---- */
-void do_ls(const char *dir, int long_format, int horizontal_format)
-{
-    struct dirent *entry;
-    DIR *dp = opendir(dir);
-
-    if (dp == NULL) {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-
-    // Dynamic array of filenames
-    char **files = NULL;
-    int count = 0;
-    int capacity = 0;
-    int max_len = 0;
-
-    errno = 0;
-    while ((entry = readdir(dp)) != NULL) {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        // Grow the array if needed
-        if (count == capacity) {
-            capacity = capacity == 0 ? 16 : capacity * 2;
-            files = realloc(files, capacity * sizeof(char *));
-            if (files == NULL) {
-                perror("realloc");
-                closedir(dp);
-                return;
-            }
-        }
-
-        // Duplicate the filename
-        files[count] = strdup(entry->d_name);
-        count++;
-
-        // Track longest filename
-        int len = strlen(entry->d_name);
-        if (len > max_len) max_len = len;
-    }
-
-    if (errno != 0)
-        perror("readdir failed");
-    // Sort alphabetically
-    qsort(files, count, sizeof(char *), compare_strings);
-
-    // Display: long listing OR columns
-    if (long_format) {
-    for (int i = 0; i < count; i++) {
-        print_long(dir, files[i]);
-    }
-} else if (horizontal_format) {
-    print_horizontal(files, count, max_len);
-} else {
-    print_columns(files, count, max_len);
-}
-
-    // Free memory
-    for (int i = 0; i < count; i++)
-        free(files[i]);
-    free(files);
-
-    closedir(dp);
 }
